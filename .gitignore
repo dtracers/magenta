@@ -1,3 +1,7 @@
 *.pyc
 /bazel-*
 .ipynb_checkpoints/
+.idea
+*.iml
+events.out.tfevents*
+big_model/

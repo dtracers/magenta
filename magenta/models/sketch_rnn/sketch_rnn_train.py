@@ -17,7 +17,7 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
-from cStringIO import StringIO
+from io import BytesIO
 import json
 import os
 import time
@@ -134,9 +134,9 @@ def load_dataset(data_dir, model_params, inference_mode=False):
     if data_dir.startswith('http://') or data_dir.startswith('https://'):
       tf.logging.info('Downloading %s', data_filepath)
       response = requests.get(data_filepath)
-      data = np.load(StringIO(response.content))
+      data = np.load(BytesIO(response.content))
     else:
-      data = np.load(data_filepath)  # load this into dictionary
+      data = np.load(data_filepath, encoding='bytes')  # load this into dictionary
     tf.logging.info('Loaded {}/{}/{} from {}'.format(
         len(data['train']), len(data['valid']), len(data['test']),
         dataset))
@@ -241,14 +241,12 @@ def load_checkpoint(sess, checkpoint_path):
   tf.logging.info('Loading model %s.', ckpt.model_checkpoint_path)
   saver.restore(sess, ckpt.model_checkpoint_path)
 
-
 def save_model(sess, model_save_path, global_step):
   saver = tf.train.Saver(tf.global_variables())
   checkpoint_path = os.path.join(model_save_path, 'vector')
   tf.logging.info('saving model %s.', checkpoint_path)
   tf.logging.info('global_step %i.', global_step)
   saver.save(sess, checkpoint_path, global_step=global_step)
-
 
 def train(sess, model, eval_model, train_set, valid_set, test_set):
   """Train a sketch-rnn model."""
@@ -267,6 +265,7 @@ def train(sess, model, eval_model, train_set, valid_set, test_set):
   model_summ.value.add(
       tag='Num_Trainable_Params', simple_value=float(count_t_vars))
   summary_writer.add_summary(model_summ, 0)
+  summary_writer.add_graph(model.output_x.graph)
   summary_writer.flush()
 
   # setup eval stats
@@ -300,7 +299,7 @@ def train(sess, model, eval_model, train_set, valid_set, test_set):
         model.global_step, model.train_op
     ], feed)
 
-    if step % 20 == 0 and step > 0:
+    if step % 40 == 0 and step > 0:
 
       end = time.time()
       time_taken = end - start
@@ -336,8 +335,12 @@ def train(sess, model, eval_model, train_set, valid_set, test_set):
       summary_writer.add_summary(lr_summ, train_step)
       summary_writer.add_summary(kl_weight_summ, train_step)
       summary_writer.add_summary(time_summ, train_step)
+      summary_writer.add_graph(model.output_x.graph)
       summary_writer.flush()
       start = time.time()
+
+    if step % 1000 == 0:
+      save_model(sess, FLAGS.log_root, step)
 
     if step % hps.save_every == 0 and step > 0:
 
@@ -425,6 +428,8 @@ def train(sess, model, eval_model, train_set, valid_set, test_set):
         summary_writer.add_summary(eval_time_summ, train_step)
         summary_writer.flush()
 
+  save_model(sess, FLAGS.log_root, hps.num_steps)
+
 
 def trainer(model_params):
   """Train a sketch-rnn model."""
@@ -432,7 +437,7 @@ def trainer(model_params):
 
   tf.logging.info('sketch-rnn')
   tf.logging.info('Hyperparams:')
-  for key, val in model_params.values().iteritems():
+  for key, val in model_params.values().items():
     tf.logging.info('%s = %s', key, str(val))
   tf.logging.info('Loading data files.')
   datasets = load_dataset(FLAGS.data_dir, model_params)
@@ -447,7 +452,12 @@ def trainer(model_params):
   model = sketch_rnn_model.Model(model_params)
   eval_model = sketch_rnn_model.Model(eval_model_params, reuse=True)
 
-  sess = tf.InteractiveSession()
+  config = tf.ConfigProto(
+    device_count={'GPU': 1}
+  )
+  # config.gpu_options.allow_growth = True
+
+  sess = tf.Session(config=config)
   sess.run(tf.global_variables_initializer())
 
   if FLAGS.resume_training:
@@ -461,6 +471,34 @@ def trainer(model_params):
 
   train(sess, model, eval_model, train_set, valid_set, test_set)
 
+def params():
+    data_set=['aaron_sheep.npz'],  # Our dataset. Can be list of multiple .npz sets.
+    num_steps=10000000,            # Total number of training set. Keep large.
+    save_every=500,                # Number of batches per checkpoint creation.
+    dec_rnn_size=512,              # Size of decoder.
+    dec_model='lstm',              # Decoder: lstm, layer_norm or hyper.
+    enc_rnn_size=256,              # Size of encoder.
+    enc_model='lstm',              # Encoder: lstm, layer_norm or hyper.
+    z_size=128,                    # Size of latent vector z. Recommend 32, 64 or 128.
+    kl_weight=0.5,                 # KL weight of loss equation. Recommend 0.5 or 1.0.
+    kl_weight_start=0.01,          # KL start weight when annealing.
+    kl_tolerance=0.2,              # Level of KL loss at which to stop optimizing for KL.
+    batch_size=100,                # Minibatch size. Recommend leaving at 100.
+    grad_clip=1.0,                 # Gradient clipping. Recommend leaving at 1.0.
+    num_mixture=20,                # Number of mixtures in Gaussian mixture model.
+    learning_rate=0.001,           # Learning rate.
+    decay_rate=0.9999,             # Learning rate decay per minibatch.
+    kl_decay_rate=0.99995,         # KL annealing decay rate per minibatch.
+    min_learning_rate=0.00001,     # Minimum learning rate.
+    use_recurrent_dropout=True,    # Recurrent Dropout without Memory Loss. Recomended.
+    recurrent_dropout_prob=0.90,   # Probability of recurrent dropout keep.
+    use_input_dropout=False,       # Input dropout. Recommend leaving False.
+    input_dropout_prob=0.90,       # Probability of input dropout keep.
+    use_output_dropout=False,      # Output droput. Recommend leaving False.
+    output_dropout_prob=0.90,      # Probability of output dropout keep.
+    random_scale_factor=0.15,      # Random scaling data augmention proportion.
+    augment_stroke_prob=0.10,      # Point dropping augmentation proportion.
+    conditional=True,              # If False, use decoder-only model.
 
 def main(unused_argv):
   """Load model params, save config file and start trainer."""

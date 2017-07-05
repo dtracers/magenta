@@ -41,7 +41,7 @@ def lstm_ortho_initializer(scale=1.0):
   def _initializer(shape, dtype=tf.float32,
                    partition_info=None):  # pylint: disable=unused-argument
     size_x = shape[0]
-    size_h = shape[1] / 4  # assumes lstm.
+    size_h = int(shape[1] / 4)  # assumes lstm.
     t = np.zeros(shape)
     t[:, :size_h] = orthogonal([size_x, size_h]) * scale
     t[:, size_h:size_h * 2] = orthogonal([size_x, size_h]) * scale
